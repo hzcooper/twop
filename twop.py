@@ -16,10 +16,19 @@ LCURL = 'LCURL'
 RCURL = 'RCURL'
 ID = 'ID'
 ASSIGN = 'ASSIGN'
+ARG_X = 'X'
+ARG_Y = 'Y'
+DEF = 'DEF'
+OP = 'OP'
+COLON = 'COLON'
 EOF = 'EOF'
 
-# Variable registers
+# Variable and operator defintions
 REGS = {}
+OPS = {}
+
+# Reserved operators
+RESERVED_CHARS = '+-*/=()[]\{\}:%'
 
 # Token class for parsing
 class Token(object):
@@ -68,6 +77,21 @@ class Lexer(object):
                 self.advance()
         return Token(NUM, float(result))
 
+    # Checks to see if characters following x are a valid operator definition
+    def check_def(self):
+        self.advance()
+        if self.curr_char in RESERVED_CHARS:
+            return Token(ARG_X, 'X')
+        op_char = self.curr_char
+        if op_char.isspace() or op_char.isdigit() or op_char.isalpha():
+            return Token(ARG_X, 'X')
+        if self.text[self.pos + 1] == 'y':
+            self.advance()
+            self.advance()
+            return Token(DEF, op_char)
+        else:
+            return Token(ARG_X, 'X')
+
     # Gets the next token for the parser
     def get_next_token(self):
         while self.curr_char is not None:
@@ -112,12 +136,24 @@ class Lexer(object):
             if self.curr_char == '=':
                 self.advance()
                 return Token(ASSIGN, '=')
+            if self.curr_char == ':':
+                self.advance()
+                return Token(COLON, ':')
+            if self.curr_char == 'x':
+                return self.check_def()
+            if self.curr_char == 'y':
+                self.advance()
+                return Token(ARG_Y, 'Y')
             if self.curr_char.isalpha():
                 curr = self.curr_char
+                if curr == 'y':
+                    raise Exception("Invalid ID: y is a reserved character")
                 self.advance()
                 return Token(ID, curr)
-
-            raise Exception("Invalid character")
+            else:
+                curr = self.curr_char
+                self.advance()
+                return Token(OP, curr)
         return Token(EOF, None)
 
 # Abstract parent class for AST classes
@@ -130,10 +166,9 @@ class Program(AST):
     def __init__(self, statements):
         self.statements = statements
 
-    def visit(self):
+    def visit(self,x=None,y=None):
         for stat in self.statements:
             stat.visit()
-        return "done"
 
 # Binary operator AST node
 class BinOp(AST):
@@ -143,17 +178,17 @@ class BinOp(AST):
         self.token = op
         self.right = right
 
-    def visit(self):
+    def visit(self, x=None, y=None):
         if self.token.type == PLUS:
-            return self.left.visit() + self.right.visit()
+            return self.left.visit(x,y) + self.right.visit(x,y)
         elif self.token.type == MINUS:
-            return self.left.visit() - self.right.visit()
+            return self.left.visit(x,y) - self.right.visit(x,y)
         elif self.token.type == MUL:
-            return self.left.visit() * self.right.visit()
+            return self.left.visit(x,y) * self.right.visit(x,y)
         elif self.token.type == DIV:
-            return self.left.visit() / self.right.visit()
+            return self.left.visit(x,y) / self.right.visit(x,y)
         elif self.token.type == MOD:
-            return self.left.visit() % self.right.visit()
+            return self.left.visit(x,y) % self.right.visit(x,y)
 
 # Numerical AST node
 class Num(AST):
@@ -161,7 +196,7 @@ class Num(AST):
         self.token = token
         self.value = token.value
 
-    def visit(self):
+    def visit(self, x=None, y=None):
         return self.value
 
 # Variable ID AST node
@@ -170,8 +205,8 @@ class Var(AST):
         self.token = token
         self.value = token.value
 
-    def visit(self):
-        return REGS[self.value]
+    def visit(self,x=None,y=None):
+        return REGS.get(self.value)
 
 # Assignment statement AST node
 class Assign(AST):
@@ -180,8 +215,47 @@ class Assign(AST):
         self.token = token
         self.right = right
 
-    def visit(self):
+    def visit(self,x=None,y=None):
         REGS[self.left.value] = self.right.visit()
+
+# Math expression AST node
+class Math_Expr(AST):
+    def __init__(self, head):
+        self.head = head
+
+    def visit(self,x=None,y=None):
+        print(self.head.visit())
+
+# Operator defintion AST node
+class OpDef(AST):
+    def __init__(self, op, content):
+        self.token = op
+        self.op = op
+        self.content = content
+
+    def visit(self,x=None,y=None):
+        OPS[self.token.value] = self.content
+
+# Operator call AST node
+class OpCall(AST):
+    def __init__(self, left, op, right):
+        self.left = left
+        self.token = self.op = op
+        self.right = right
+
+    def visit(self,x=None,y=None):
+        if self.op.value in OPS.keys():
+            return OPS[self.token.value].visit(self.left.visit(), self.right.visit())
+        else:
+            raise Exception("Operator not found: " + self.token.value)
+
+class X(AST):
+    def visit(self,x=None,y=None):
+        return x
+
+class Y(AST):
+    def visit(self,x=None,y=None):
+        return y
 
 # Parser class; runs through the CFG heirarchy and produces an AST
 class Parser(object):
@@ -198,34 +272,57 @@ class Parser(object):
 
     # program: statement*
     def program(self):
+        #print("program")
         result = []
         while self.curr_token.type != EOF:
             result.append(self.statement())
         return Program(result)
 
-    # statement: (expr | assignment | def) NEWLINE
+    # statement: (math_expr | assignment | def) NEWLINE
     def statement(self):
+        #print("statement")
         tok = self.curr_token
         if tok.type == LBRAC:
             self.eat(LBRAC)
-            node = self.assignment()
+            if self.curr_token.type == DEF:
+                node = self.op_def()
+            else:
+                node = self.assignment()
             self.eat(RBRAC)
             return node
         else:
-            node = self.expr()
+            node = self.math_expr()
             return node
+
+    # op_def : LBRAC X OP Y COLON expr RBRAC
+    def op_def(self):
+        #print("opdef")
+        tok = self.curr_token
+        self.eat(DEF)
+        self.eat(COLON)
+        definition = self.expr()
+        return OpDef(tok, definition)
 
     # assignment : LBRAC variable ASSIGN expr RBRAC
     def assignment(self):
+        #print("assignment")
         left = self.variable()
         tok = self.curr_token
         self.eat(ASSIGN)
         right = self.expr()
         return Assign(left, tok, right)
 
+    # math_expr: LCURL expr RCURL
+    def math_expr(self):
+        #print("math_expr")
+        self.eat(LCURL)
+        node = self.expr()
+        self.eat(RCURL)
+        return Math_Expr(node)
+
     # expr : term ((PLUS | MINUS) term)*
     def expr(self):
-        self.eat(LCURL)
+        #print("expr")
         node = self.term()
 
         while self.curr_token.type in (PLUS, MINUS):
@@ -237,12 +334,11 @@ class Parser(object):
 
             node = BinOp(left=node, op=tok, right=self.term())
 
-        self.eat(RCURL)
-
         return node
 
     # term : factor ((MUL | DIV | MOD) factor)*
     def term(self):
+        #print("term")
         node = self.factor()
 
         while self.curr_token.type in (MUL, DIV, MOD):
@@ -258,8 +354,20 @@ class Parser(object):
 
         return node
 
-    # factor : (LPAREN expr RPAREN) | NUM | variable
     def factor(self):
+        #print("factor")
+        node = self.op_arg()
+
+        while self.curr_token.type == OP:
+            tok = self.curr_token
+            self.eat(OP)
+            node = OpCall(left=node, op=tok, right=self.op_arg())
+
+        return node
+
+    # op_arg : (LPAREN expr RPAREN) | NUM | variable
+    def op_arg(self):
+        #print("op_arg")
         tok = self.curr_token
         if tok.type == LPAREN:
             self.eat(LPAREN)
@@ -269,12 +377,19 @@ class Parser(object):
         if tok.type == NUM:
             self.eat(NUM)
             return Num(tok)
+        if tok.type == ARG_X:
+            self.eat(ARG_X)
+            return X()
+        if tok.type == ARG_Y:
+            self.eat(ARG_Y)
+            return Y()
         else:
             node = self.variable()
             return node
 
     # variable: ID
     def variable(self):
+        #print("var")
         var = Var(self.curr_token)
         self.eat(ID)
         return var
@@ -306,8 +421,7 @@ def main():
         lexer = Lexer(text)
         parser = Parser(lexer)
         interpreter = Interpreter(parser)
-        result = interpreter.interpret()
-        print(result)
+        interpreter.interpret()
 
 if __name__ == '__main__':
     main()

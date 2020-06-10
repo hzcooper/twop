@@ -1,7 +1,10 @@
 program : statement*
-statement : (expr | assignment | def)
-expr : LCURL term ((PLUS | MINUS) term)* RCURL
+statement : (math_expr | assignment | op_def)
+op_def : LBRAC X OP Y COLON expr RBRAC
+math_expr: LCURL expr RCURL
 assignment : LBRAC variable ASSIGN expr RBRAC
+expr : term ((PLUS | MINUS) term)*
 term : factor ((MUL | DIV | MOD) factor)*
-factor : (LPAREN expr RPAREN) | NUM | variable
+factor: op_arg (OP op_arg)*
+op_arg : (LPAREN expr RPAREN) | NUM | variable | X | Y
 variable : ID
